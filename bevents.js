@@ -39,8 +39,12 @@ function beventsObj() {
                         //be the only guy broadcasting... but at least one server
                         //will be letting everyone else know about everyone else as
                         //they come online.
-                        setInterval(announceSelf, 10000);
-                        req.end();
+                        setInterval((function(scope) {
+                            return (function() { 
+                                        scope.announceSelf()
+                            });
+                        })(scope), 10000);
+                        req.end("it's just you.");
                         return;  //We're done talking to ourself.
                     }
 
