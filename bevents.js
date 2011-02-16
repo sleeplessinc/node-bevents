@@ -2,233 +2,228 @@ var events = require('events');
 var http = require('http');
 var url = require('url');
 
-function beventsObj() {
-    this.domain = 'localhost';
-    this.machineList = {};
-    this.hserver = null; //Will contain the event handler.
-    this.isListening = false;
-    this.port = 3868;
-    this.announcement = "/bevents/hi/";
-    this.eventpost = "/bevents/postevent/";
+var config = {
+    domain : 'localhost',
+    machineList : {},
+    hserver : null, //Will contain the event handler.
+    isListening : false,
+    port : 3868,
+    announcement : "/bevents/hi/",
+    eventpost : "/bevents/postevent/",
 
     //Assign ourself a random ID...  this should be good enough.
-    this.idString = Math.floor(Math.random(new Date().getTime()) * 10000000000) + "-" + Math.floor(Math.random(new Date().getTime()) * 10000000000);
-    //Has-a normal event emitter;
-    this.baseEmitter = new events.EventEmitter();
+    idString : Math.floor(Math.random(new Date().getTime()) * 10000000000) + 
+                        "-" + Math.floor(Math.random(new Date().getTime()) * 10000000000),
+    baseEmitter: null
+};
 
-    //Starts our event http server.  Specifies which domain to ping
-    //and port to listen on.
-    this.createServer = function(port, domain, optionalMachineList) {
-        if ( port ) this.port = port;
+function ipToHash(ipString) {
+    return (ipString + "").replace(/\.|:|-/g,"l");
+}
 
-        this.domain = ( domain ? domain : 'localhost' );
+function announceResHandler(res, callback) {
+    if ( callback )
+        callback();
 
-        if ( optionalMachineList ) {
-            for ( var i = 0; i < optionalMachineList.length; i++ ) {
-                this.machineList[this.ipToHash(optionalMachineList[i])] = {ip:optionalMachineList[i]};
+    res.on('data', function (chunk) {
+        var asString = ""+chunk;
+        if (( asString.match(/^\[|{/) ) && ( asString != "[[object Object]]" )) { 
+            var dataPassed = JSON.parse(asString);
+            //Is array?
+            if ( chunk.constructor == [].constructor ) {
+                //Chunk should be list of machines they know about.  We say "hi",
+                //to them, if we don't already know about them.
+                var machines = JSON.parse(chunk);
+                if ( machines && typeof machines == 'object' ) {
+                    for ( var machine in machines ) {
+                        if ( config.machineList[machine] == null ) {
+                            config.machineList[machine] = machines[machine];   //Place holder object for that machine
+                            //Put an announcement on the queue.
+                            setTimeout((function(machine) {
+                                return (function() { announceSelf(machine); });
+                            })(machine), 0);
+                        } 
+                    }
+                }
             }
         }
-
-        this.hserver = http.createServer((function(scope) {
-            return (function(req, res) {
-                var urlObj = url.parse(req.url, true);
-
-                //Check to see if someone is just registering with us.
-                if ((urlObj.pathname + "").match(/.*\/hi\/.*/)) {
-                    //if the id passed is our own... we're talking
-                    //to ourself.  Try again to talk to someone else in
-                    //5 seconds.
-                    if ( urlObj.query.id == scope.idString ) {
-                        //Whomever is first onto the network, could potentially
-                        //be the only guy broadcasting... but at least one server
-                        //will be letting everyone else know about everyone else as
-                        //they come online.
-                        setTimeout((function(scope) {
-                            return (function() { 
-                                        scope.announceSelf()
-                            });
-                        })(scope), 10000);
-                        res.end();
-                        return;  //We're done talking to ourself.
-                    }
-
-                    //So, we're not talking to ourself.  Tell them what we know.
-                    var buildList = JSON.stringify(scope.machineList);
-
-                    //Store the connector to the machinelist.
-                    var ipAddress = req.socket.remoteAddress;
-                    var ipString = scope.ipToHash(ipAddress);
-                    if (!scope.machineList[ipString]) {
-                        scope.machineList[ipString] = {ip:ipAddress};
-                    }
-
-                    //Send out the list as valid js. 
-                    res.end(buildList);
-                }
-                else if ((urlObj.pathname + "").match(/.*postevent.*/)) {
-                    if ( urlObj.query.id == scope.idString ) {
-                        //We generated the event. Bail.
-                        res.end();
-                        return;
-                    }
-
-                    //So... we didn't create the event. Trigger baby.
-                    if ( urlObj.query.e ) {
-                        var eventObj = JSON.parse(urlObj.query.e);
-                        scope.serverTrigger(eventObj);
-                    }
-
-                    res.end();
-                }
-                else {
-                    res.end("Uh... sorry:" + urlObj.pathname);
-                    return;
-                }
-            });
-        })(this));
-
-        //Make sure you announce yourself before you start listening.
-        //This means you'll always talk to someone else before
-        //accidentally talking to yourself and being secluded.
-        this.announceSelf(null, (function(scope) {
-            return ( function() {                
-                //Now that we tried to get someone elses response start up our server.
-                if ( !scope.isListening )
-                {
-                    scope.isListening = true;
-                    scope.hserver.listen(scope.port);
-                }
-            });
-        })(this));
-    }
-
-    //Handles anouncing ourself to someone else in the pool of machines
-    //to collect other machines we should talk to.
-    this.announceSelf = function(machine, callback) {
-        var options = {
-                host: (machine ? machine : this.domain),
-                port: this.port,
-                path: this.announcement + "?id="+this.idString
+        else 
+        {
+            console.log("Not something we know how to parse...");
+            console.log(chunk + ""); 
+            console.log("got that?");
         }
+    });
+}
 
-        var scope = this;
-        this.options = options;
-
-        //Coding horror.  Straight up.
-        var getReq = http.get(options, this.handleResponseClosure(callback)).on('error', (function(scope, callback) { 
-                            return ( function(e) {
-                                console.log("Got error: " + e.message);
-                                setTimeout(function() { 
-                                    scope.announceSelf();
-                                }, 1000);
-                                if ( callback )
-                                    callback();
-                            });
-                          })(this, callback));
+function announceSelf(machine, callback) {
+    var options = {
+        host: (machine ? machine : config.domain),
+        port: config.port,
+        path: config.announcement + "?id="+config.idString
     }
 
-    this.handleResponseClosure = function(callback) {
-        var scope = this;
+    this.options = options;
+
+    var getReq = http.get(options, (function(callback) { 
+                                        return (function( res ) {
+                                            announceResHandler(res, callback);
+                                        });
+                                   })(callback));
+
+    getReq.on('error', (function(callback) { return ( function(e) {
+        console.log("Got error: " + e.message);
+        setTimeout(function() { announceSelf(); }, 1000);
         if ( callback )
             callback();
-        return (function(res) {
-            res.on('data', scope.handleResponseDataClosure() );
+    }); })(callback));
+}
+
+function serverTrigger(eventObj) {
+    config.baseEmitter.emit(eventObj.type + ".bvent", eventObj);
+}
+
+function postEvent(eventObj) {
+    for ( var machine in config.machineList ) {
+        var options = {
+                host: (config.machineList[machine] ? config.machineList[machine].ip : config.domain),
+                port: config.port,
+                path: config.eventpost + "?id="+config.idString + "&e=" + JSON.stringify(eventObj)
+        }
+
+        http.get(options, function(res) {
+            res.on('data', function (chunk) { });
+        }).on('error', function(e) {
+            console.log("Got post event error: " + e.message);
         });
     }
+}
 
-    this.handleResponseDataClosure = function() {
-        var scope = this;
-        return (function (chunk) {
-            var asString = ""+chunk;
-            if (( asString.match(/^\[|{/) ) && ( asString != "[[object Object]]" )) { 
-                var dataPassed = JSON.parse(asString);
-                //Is array?
-                if ( chunk.constructor == [].constructor ) {
-                    //Chunk should be list of machines they know about.  We say "hi",
-                    //to them, if we don't already know about them.
-                    var machines = JSON.parse(chunk);
-                    if ( machines && typeof machines == 'object' ) {
-                        for ( var machine in machines ) {
-                            if ( scope.machineList[machine] == null ) {
-                                scope.machineList[machine] = machines[machine];   //Place holder object for that machine
-                                //Put an announcement on the queue.
-                                setTimeout((function(machine) {
-                                                return (function() { scope.announceSelf(machine); });
-                                            })(machine), 0);
-                            } 
-                        }
-                    }
-                }
-            }
-            else 
-            {
-                console.log("Not something we know how to parse...");
-                console.log(chunk + ""); 
-                console.log("got that?");
-            }
-        });
+function connectionHandler(req, res) {
+    var urlObj = url.parse(req.url, true);
+
+    //Check to see if someone is just registering with us.
+    if ((urlObj.pathname + "").match(/.*\/hi\/.*/)) {
+        //if the id passed is our own... we're talking
+        //to ourself.  Try again to talk to someone else in
+        //5 seconds.
+        if ( urlObj.query.id == config.idString ) {
+            //Whomever is first onto the network, could potentially
+            //be the only guy broadcasting... but at least one server
+            //will be letting everyone else know about everyone else as
+            //they come online.
+            setTimeout(announceSelf, 10000);
+            res.end();
+            return;  //We're done talking to ourself.
+        }
+
+        //So, we're not talking to ourself.  Tell them what we know.
+        var buildList = JSON.stringify(config.machineList);
+
+        //Store the connector to the machinelist.
+        var ipAddress = req.socket.remoteAddress;
+        var ipString = ipToHash(ipAddress);
+        if (!config.machineList[ipString]) {
+            config.machineList[ipString] = {ip:ipAddress};
+        }
+
+        //Send out the list as valid js. 
+        res.end(buildList);
     }
+    //Or maybe they are trying to hand us an event from the 
+    //other part of the fleet.
+    else if ((urlObj.pathname + "").match(/.*postevent.*/)) {
+        //Check to see if this event was sent by us.
+        if ( urlObj.query.id == config.idString ) {
+            //We generated the event. Bail.
+            res.end();
+            return;
+        }
 
-    this.postEvent = function(eventObj) {
-        var scope = this;
-        for ( var machine in this.machineList ) {
+        //So... we didn't create the event. Trigger baby, let the
+        //standard event emitter do the work.
+        if ( urlObj.query.e ) {
+            var eventObj = JSON.parse(urlObj.query.e);
+            serverTrigger(eventObj);
+        }
 
-            var options = {
-                    host: (this.machineList[machine] ? this.machineList[machine].ip : this.domain),
-                    port: this.port,
-                    path: this.eventpost + "?id="+this.idString + "&e=" + JSON.stringify(eventObj)
-            }
+        //And we're done.
+        res.end();
+    }
+    else {
+        res.end("Uh... sorry:" + urlObj.pathname);
+        return;
+    }
+}
 
-            http.get(options, function(res) {
-                res.on('data', function (chunk) {
-                });
-            }).on('error', function(e) {
-                console.log("Got post event error: " + e.message);
-            });
+function beventsObj() {
+    config.baseEmitter = new events.EventEmitter();
+    this.config = config;
+}
+
+//Starts our event http server.  Specifies which domain to ping
+//and port to listen on.
+beventsObj.prototype.createServer = function(port, domain, optionalMachineList) {
+    //Check to see if the port is overriden.  
+    if ( port ) config.port = port;
+
+    //For auto-discovery of machines
+    config.domain = ( domain ? domain : 'localhost' );
+
+    //And if auto-discovery can't work... see if they just gave us a fleet
+    //to work amongst.
+    if ( optionalMachineList ) {
+        for ( var i = 0; i < optionalMachineList.length; i++ ) {
+            config.machineList[ipToHash(optionalMachineList[i])] = {ip:optionalMachineList[i]};
         }
     }
 
-    this.ipToHash = function(ip) {
-        return (ip + "").replace(/\.|:|-/g,"l");
-    }
+    //This is the server that will start handling events and notifications.
+    config.hserver = http.createServer(connectionHandler);
 
-    this.on = function(eventName, callback) {
-        var scope = this;
-        //Mirror EventEmitter, but be smart about other machines.
-        this.baseEmitter.on(eventName+".bvent", (function(scope, callback ) {
-            return (function(eventObj) {
-                if ( eventObj.id && eventObj.id != scope.idString ) {
-                    callback(eventObj);
-                }
-                else
-                    scope.postEvent(eventObj);
-            });
-        })(this, callback));
-    }
-
-    this.removeListener = function(eventName, listener) {
-        //Mirror removeListener
-        this.baseEmitter.removeListener(eventName+".bvent", listener);
-    }
-
-    this.serverTrigger = function(eventObj) {
-        this.baseEmitter.emit(eventObj.type + ".bvent", eventObj);
-    }
-
-    function trigger (eventName, data) {
-        if ( data == null )
-            data = {};
-
-        var eventObj = {};
-        eventObj.id = this.idString;
-        eventObj.type = eventName;
-        eventObj.data = data;
-
-        this.baseEmitter.emit(eventName+".bvent", eventObj);
-    }
-
-    this.emit = trigger;
-    this.trigger = trigger;
+    //Make sure you announce yourself before you start listening.
+    //This means you'll always talk to someone else before
+    //accidentally talking to yourself and being secluded.
+    announceSelf(null, function() {                
+        //Now that we tried to get someone elses response start up our server.
+        if ( !config.isListening ) {
+            config.isListening = true;
+            config.hserver.listen(config.port);
+        }
+    });
 }
+
+beventsObj.prototype.on = function(eventName, callback) {
+    //Mirror EventEmitter, but be smart about other machines.
+    config.baseEmitter.on(eventName+".bvent", (function(callback ) {
+        return (function(eventObj) {
+            if ( eventObj.id && eventObj.id != config.idString ) {
+                callback(eventObj);
+            }
+            else
+                postEvent(eventObj);
+        });
+    })(callback));
+}
+
+beventsObj.prototype.removeListener = function(eventName, listener) {
+    //Mirror removeListener
+    config.baseEmitter.removeListener(eventName+".bvent", listener);
+}
+
+function trigger (eventName, data) {
+    if ( data == null )
+        data = {};
+
+    var eventObj = {};
+    eventObj.id = config.idString;
+    eventObj.type = eventName;
+    eventObj.data = data;
+
+    config.baseEmitter.emit(eventName+".bvent", eventObj);
+}
+
+beventsObj.prototype.emit = trigger;
+beventsObj.prototype.trigger = trigger;
 
 exports.bevents = new beventsObj();
