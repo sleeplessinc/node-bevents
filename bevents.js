@@ -34,14 +34,14 @@ var STD_PORT = 9999;
 
 var BEvents = function (ready, bootOthers) {
 
-	var self = this;
+	var self = this;		// xxx I really don't like this
 	events.EventEmitter.call(self);
 	self.super_emit = self.emit;
 
 	self.myPort = STD_PORT;
 
 	self.others = {};
-	bootOthers = bootOthers || [LOCALHOST+":"+STD_PORT];
+	bootOthers = bootOthers || [LOCALHOST + ":" + STD_PORT];
 	bootOthers.forEach(function (other) {
 		var m = other.match(/^([^:]+):(\d+)$/);
 		if (m) {
@@ -71,7 +71,7 @@ var BEvents = function (ready, bootOthers) {
 			o = null;
 			payload = j2o(data);
 			if (msg === "hello") {
-				self.others[rip+":"+payload.port] = {port: payload.port, host: rip};
+				self.others[rip + ":" + payload.port] = {port: payload.port, host: rip};
 				o = ["peers", self.others];
 			}
 			else {
@@ -84,9 +84,9 @@ var BEvents = function (ready, bootOthers) {
 
 
 	self.emit = function (msg, payload) {
-		var id, opts, req, cb, other, k;
+		var id, opts, req, cb, other, k, path;
 
-		if(msg === "newListener") {
+		if (msg === "newListener") {
 			return;
 		}
 
@@ -99,7 +99,7 @@ var BEvents = function (ready, bootOthers) {
 			res.on("data", function (data) {
 				// xxx inadequate; multiple data events may occur
 				arr = j2o(data);
-				if(arr) {
+				if (arr) {
 					self.super_emit(arr[0], arr[1]);
 				}
 			});
@@ -121,26 +121,26 @@ var BEvents = function (ready, bootOthers) {
 
 
 	self.isBound = false;		// xxx, for some reason "bound()" gets called twice?  
-	var bound = function() {
-		if(!self.isBound) {
+	self.bound = function () {
+		if (!self.isBound) {
 			self.isBound = true;
 
 			self.on("peers", function (payload) {
 				self.others = payload; 
-				if(ready) {
+				if (ready) {
 					ready();
 				}
 			});
 
 			self.emit("hello", {port: self.myPort});
 		}
-	}
+	};
 
-	self.httpd.on("error", function(e) {
-		if (e.code == "EADDRINUSE") {
+	self.httpd.on("error", function (e) {
+		if (e.code === "EADDRINUSE") {
 			self.myPort++;
-			if(self.myPort <= STD_PORT + 1) {
-				self.httpd.listen(self.myPort, bound);
+			if (self.myPort <= STD_PORT + 1) {
+				self.httpd.listen(self.myPort, self.bound);
 			}
 		}
 		else {
@@ -148,7 +148,7 @@ var BEvents = function (ready, bootOthers) {
 		}
 	});
 
-	self.httpd.listen(self.myPort, bound);
+	self.httpd.listen(self.myPort, self.bound);
 
 };
 
