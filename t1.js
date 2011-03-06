@@ -7,6 +7,8 @@ bevents = require("./bevents");
 
 b1 = new bevents.BEvents(function() {
 
+	l("b1 is listening on " + b1.myPort);
+
 	b1.on("foo", function (payload) {
 		l("__on__ foo "+o2j(payload));
 	});
