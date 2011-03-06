@@ -33,114 +33,143 @@ var o2j = function (o) { return JSON.stringify(o); };
 var j2o = function (j) { return JSON.parse(j); };
 var l = function (s) { console.log(s); };
 
+var LOCALHOST = "127.0.0.1";
+var STD_PORT = 9999;
 
-var BEvents = function (opts) {
+
+var BEvents = function (bootOthers) {
 
 	var self = this;
-	var key; 
-
 	events.EventEmitter.call(self);
+	self.super_emit = self.emit;
 
-	// defaults
-	self.id = "ID_" + (new Date().getTime());	// a unique peer identifier
-	self.port = 80;
+	
+	self.myPort = STD_PORT;
 
-	// the default list of known peers
+
+	// build list of known peers
+	//self.id = "ID_" + (new Date().getTime());	// a unique peer identifier
 	self.others = {};
-	self.others[self.id] = "127.0.0.1";
+	bootOthers = bootOthers || [LOCALHOST+":"+STD_PORT];
+	l("bootOthers: "+o2j(bootOthers));
+	bootOthers.forEach(function (other) {
+		var m = other.match(/^([^:]+):(\d+)$/);
+		if (m) {
+			self.others[other] = {port: m[2], host: m[1]};
+		}
+	});
+	l("others: "+o2j(self.others));
 
-	// optional overrides
-	for (key in opts) {
-		self[key] = opts[key];
-	}
+
+	self.httpMsg = function(rip, res, msg, payload) {
+	};
 
 
 	// the embedded http server
 	self.httpd = http.createServer(function (req, res) {
+		var u, m, msg, o, rip, otherPort;
 
-		var u, m, msg, o;
+		rip = req.socket.remoteAddress;				l("\nconnect from " + rip);
 
 		u = url.parse(req.url, true);
 		m = u.pathname.match(/^\/\.([\-_.,A-Za-z0-9]+)/);		// message is restricted to this pattern
+		if (!m) {
+			res.statusCode = 404;
+			res.end();								l("responded 404");
+			return;
+		}
 
-		if (m) {
-			msg = m[1];
-			res.on("data", function (data) {
-				// xxx this is not sufficient to guarantee receipt of full msg; multiple data events may occur
-				self.super_.emit(msg, JSON.parse(data));
-			});
+		msg = m[1];									l("msg: " + msg);
 
-			// send direct response, if any
+		req.setEncoding("utf8");
+		req.on("data", function (data) {			l("x RCVD " + data);
+			// xxx 
 			o = null;
-			if (msg === "hello") {
-				// remember this peer
-				self.others[u.query.id] = req.socket.remoteAddress;
-
-				o = [self.id, "peers", self.others];
+			if (msg === "hello") {					l("got hello");
+				otherPort = j2o(data).port;
+				self.others[rip+":"+otherPort] = {port: otherPort, host: rip};
+				o = ["peers", self.others];
 			}
 			res.statusCode = 200;
-			res.end(JSON.stringify(o));
-		}
-		else {
-			res.statusCode = 404;
-			res.end();
-		}
-
+			res.end(o2j(o));						l("sent back "+o2j(o));
+													l("(http tx complete)");
+		});
 	});
 
 
-	// send a message to peer via an http request
-	self.super_emit = self.emit;
+	// send message to peers via http request
 	self.emit = function (msg, payload) {
-		var id, opts, req, cb;
+		var id, opts, req, cb, other, k;
 
-		if(msg === "newListener") { return; }
+		if(msg === "newListener") {
+			return;
+		}
 
 		payload = payload || {};
+		l("EMIT " + msg + ", " + o2j(payload));
 
-		l(self.id + ": EMIT " + msg + ", " + o2j(payload));
-
+		// callback for transaction response 
 		cb = function (res) {
 			var arr;
 
-			// process the msg that came back (if any)
+			l("got response ...");
+
 			res.setEncoding("utf8");
 			res.on("data", function (data) {
 				// xxx this is not sufficient to guarantee receipt of full msg; multiple data events may occur
 				arr = j2o(data);
-				l("RCVD from "+arr[0]+": " + data);
+				l("RCVD " + data);
 				if(arr) {
-					self.super_emit(arr[1], arr[2]);
+					l("emitting local: "+data);
+					self.super_emit(arr[0], arr[1]);
 				}
 			});
 
 		};
 
-		// broadcast msg to peers
-		path = "/." + msg + "?id=" + self.id; //l("BCAST path=" + path);
-		for (id in self.others) {
-			opts = {host: self.others[id], port: self.port, path: path, method: "POST"};
+		// broadcast msg to others
+		path = "/." + msg;
+		l("broadcasting: "+path+", "+o2j(payload));
+		for (k in self.others) {
+			other = self.others[k];
+			l("  to: "+o2j(other));
+			opts = {host: other.host, port: other.port, path: path, method: "POST"};
 			req = http.request(opts, cb);
-			req.write(encodeURIComponent(JSON.stringify(payload)));
+			req.write(o2j(payload));
 			req.end();
 		}
 
 	};
 
 
-	self.httpd.listen(self.port, function () {
+	self.isBound = false;		// xxx, for some reason "bound()" gets called twice?
+	var bound = function() {
+		if(!self.isBound) {
+			l("LISTENING " + self.myPort);
 
-		self.on("peers", function (payload) {
-			l(self.id + ": ON peers: " + o2j(payload));
-			var id;
-			for (id in payload) {
-				self.others[id] = "---";
+			self.isBound = true;
+			self.on("peers", function (payload) {		l("ON peers: " + o2j(payload));
+				self.others = payload; 
+			});
+
+			self.emit("hello", {port: self.myPort});
+		}
+	}
+
+	self.httpd.on("error", function(e) {			l("ugh " + e.code);
+		if (e.code == "EADDRINUSE") {
+			l("port taken: " + self.myPort);
+			self.myPort++;
+			if(self.myPort <= STD_PORT + 1) {
+				self.httpd.listen(self.myPort, bound);
 			}
-		});
-
-		l(self.id + ": listening on " + self.port);
-		self.emit("hello");
+		}
+		else {
+			throw e;
+		}
 	});
+
+	self.httpd.listen(self.myPort, bound);
 
 };
 
